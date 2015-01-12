@@ -23,10 +23,10 @@
 module dataMemory(
 input clock,
 input d_we,
-input d_addr[7:0],
-input d_datain[15:0],
+input [7:0] d_addr,
+input [15:0] d_datain,
 
-output d_dataout[15:0]
+output [15:0] d_dataout
     );
 	 
 reg [15:0] data_mem [255:0];		//data memory

@@ -61,18 +61,19 @@
 `define BNC  	5'b11111
 
 module myCPU(
-input d_datain[15:0],
-input i_datain[15:0],
+input [15:0] d_datain,
+input [15:0] i_datain,
 input clock,
+input reset,
 input enable,
 input start,
-input select_y[3:0],
+input [3:0] select_y,
 
-output d_addr[7:0],
-output d_dataout[7:0],
-output i_addr[7:0],
+output [7:0] d_addr,
+output [7:0] d_dataout,
+output [7:0] i_addr,
 output d_we,
-output y[15:0]
+output [15:0] y
     );
 
 //************* General Registers *************//
@@ -87,11 +88,13 @@ reg [15:0] wb_ir;		//register for WB part
 
 //************** Stage Data Registers ********//
 reg [15:0] reg_A, reg_B, smdr;	//ID Stage
-reg [15:0] reg_C, smdr1, ALUo; 	//EX Stage
-reg dw,zf,nf,cf,temp_cf;			//EX Stage
-reg [15:0] regC1;						//WB Stage
+reg [15:0] reg_C, smdr1; 			//EX Stage
+reg dw,zf,nf,cf;						//EX Stage
+reg [15:0] reg_C1;					//WB Stage
 
 //************* CPU State Control *************//
+reg state,next_state;
+
 always @(posedge clock)
 	begin
 		if (!reset)
@@ -131,10 +134,13 @@ always @(posedge clock or negedge reset)
 			begin
 				id_ir <= i_datain;
 				
-				if(((mem_ir[15:11] == `BZ)
-					&& (zf == 1'b1)) 
-				|| ((mem_ir[15:11] == `BN)
-					&& (nf == 1'b1)))
+				if(((mem_ir[15:11] == `BZ) && (zf == 1'b1))
+				|| ((mem_ir[15:11] == `BNZ) && (nf == 1'b0)
+				|| ((mem_ir[15:11] == `BN) && (nf == 1'b1)))
+				|| ((mem_ir[15:11] == `BNN) && (nf == 1'b0))
+				|| ((mem_ir[15:11] == `BC) && (cf == 1'b1))
+				|| ((mem_ir[15:11] == `BNC) && (cf == 1'b0))
+				|| (mem_ir[15:11] == `JUMP) || (mem_ir[15:11] == `JMPR))
 					pc <= reg_C[7:0];
 				else
 					pc <= pc + 1;
@@ -198,9 +204,65 @@ always @(posedge clock or negedge reset) begin
 			end
 			
 		else if (state == `exec)
+				
 			begin
+				//ALU computation
+				if ((ex_ir[15:11] == `LOAD) || (ex_ir[15:11] == `STORE) 
+				|| (ex_ir[15:11] == `JMPR)  || (ex_ir[15:11] == `JUMP) 
+				|| (ex_ir[15:11] == `BZ)    || (ex_ir[15:11] == `BNZ)
+				|| (ex_ir[15:11] == `BN)	 || (ex_ir[15:11] == `BNN)
+				|| (ex_ir[15:11] == `BC)	 || (ex_ir[15:11] == `BNC))
+					begin
+						reg_C <= reg_A + reg_B;
+					end
+					
+				else if ((ex_ir[15:11] == `ADD)|| (ex_ir[15:11] == `ADDI)||(ex_ir[15:11] == `LDIH))
+					begin
+						{cf,reg_C} <= reg_A + reg_B;
+					end
+					
+				else if ((ex_ir[15:11] == `SUB) || (ex_ir[15:11] == `SUBI)|| (ex_ir[15:11] == `CMP))
+					begin
+						{cf,reg_C} <= {1'b0,reg_A} - {1'b0,reg_B};
+					end
+				
+				else if (ex_ir[15:11] == `AND)	
+					begin
+						reg_C <= reg_A & reg_B;
+						cf <= 1'b0;
+					end
+				else if (ex_ir[15:11] == `OR)
+					begin
+						reg_C <= reg_A | reg_B;
+						cf <= 1'b0;
+					end
+				else if (ex_ir[15:11] == `XOR)
+					begin
+						reg_C <= reg_A ^ reg_B;
+						cf <= 1'b0;
+					end
+				else if (ex_ir[15:11] == `ADDC)
+					begin
+						{cf,reg_C} <= reg_A + reg_B + cf;
+					end
+				else if (ex_ir[15:11] == `SUBC)
+					begin
+						{cf,reg_C} <= {1'b0,reg_A} - {1'b0,reg_B} - cf;
+					end
+				else if ((ex_ir[15:11] == `SLL) || (ex_ir[15:11] == `SLA))
+					begin
+						{cf,reg_C[15:0]} <= {reg_A[15:0]} << reg_B[3:0];
+					end
+				else if (ex_ir[15:11] == `SRL)
+					begin
+						{reg_C[15:0],cf} <= {reg_A[15:0]} >> reg_B[3:0];
+					end
+				else if (ex_ir[15:11] == `SRA)
+					begin
+						{reg_C[15:0],cf} <= {reg_A[15:0]} >>> reg_B[3:0];
+					end
+					
 				mem_ir <= ex_ir;
-				reg_C <= ALUo;
 				
 				//set the flags
 				if ((ex_ir[15:11] == `ADD) || (ex_ir[15:11] == `ADDI)|| (ex_ir[15:11] == `ADDC)
@@ -209,13 +271,11 @@ always @(posedge clock or negedge reset) begin
 				 || (ex_ir[15:11] == `SLL) || (ex_ir[15:11] == `SRL) || (ex_ir[15:11] == `SLA)
 				 || (ex_ir[15:11] == `SRA) || (ex_ir[15:11] == `CMP) || (ex_ir[15:11] == `LDIH))
 					begin
-						if (ALUo == 16'b0000_0000_0000_0000) zf <= 1'b1;
+						if (reg_C == 16'b0000_0000_0000_0000) zf <= 1'b1;
 						else											 zf <= 1'b0;
 						
-						if (ALUo[15] == 1'b1)					 nf <= 1'b1;
+						if (reg_C[15] == 1'b1)					 nf <= 1'b1;
 						else											 nf <= 1'b0;
-						
-						cf <= temp_cf;
 					end
 				else if (ex_ir[15:11] == `STORE)
 					begin
@@ -264,8 +324,14 @@ always @(posedge clock or negedge reset) begin
 			
 		else if (state == `exec)
 			begin
-				if ((wb_ir[15:11] == `LOAD)
-				|| (wb_ir[15:11] == `ADD))
+				if ((wb_ir[15:11] == `LOAD) || (wb_ir[15:11] == `SLL)
+				|| (wb_ir[15:11] == `SLA) 	 || (wb_ir[15:11] == `SRL)
+				|| (wb_ir[15:11] == `SRA)	 || (wb_ir[15:11] == `ADD)
+				|| (wb_ir[15:11] == `ADDI)  || (wb_ir[15:11] == `SUB)
+				|| (wb_ir[15:11] == `SUBI)	 || (wb_ir[15:11] == `AND)
+				|| (wb_ir[15:11] == `OR)	 || (wb_ir[15:11] == `XOR)
+				|| (wb_ir[15:11] == `LDIH)	 || (wb_ir[15:11] == `ADDC)
+				|| (wb_ir[15:11] == `SUBC))
 					gr[wb_ir[10:8]] <= reg_C1;
 			end
 end
